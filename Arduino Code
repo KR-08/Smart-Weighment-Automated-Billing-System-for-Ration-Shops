@@ -1,1 +1,177 @@
-This folder contains arduino code
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+#define SS_PIN 10
+#define RST_PIN 9
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+#define SERVO_PIN 6
+Servo myservo;
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+#define PROCEED_BTN_PIN 2
+#define CANCEL_BTN_PIN 3
+
+void printCentered(const String &text, int row) {
+  int col = (16 - text.length()) / 2;
+  lcd.setCursor(col, row);
+  lcd.print(text);
+}
+
+String readSerialLine(unsigned long timeout = 5000) {
+  unsigned long start = millis();
+  while (millis() - start < timeout) {
+    if (Serial.available()) {
+      String line = Serial.readStringUntil('\n');
+      line.trim();
+      if (line.length() > 0) return line;
+    }
+  }
+  return "";
+}
+
+void waitForButtonPress(bool &proceedPressed) {
+  unsigned long start = millis();
+  const unsigned long timeout = 15000; // 15 seconds max
+
+  printCentered("Press Proceed", 0);
+  printCentered("or Cancel Btn", 1);
+
+  proceedPressed = false;
+
+  while (millis() - start < timeout) {
+    if (digitalRead(PROCEED_BTN_PIN) == LOW) {
+      delay(50); // debounce
+      if (digitalRead(PROCEED_BTN_PIN) == LOW) {
+        proceedPressed = true;
+        return;
+      }
+    }
+    if (digitalRead(CANCEL_BTN_PIN) == LOW) {
+      delay(50);
+      if (digitalRead(CANCEL_BTN_PIN) == LOW) {
+        proceedPressed = false;
+        return;
+      }
+    }
+  }
+  // timeout -> cancel
+  proceedPressed = false;
+}
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  myservo.attach(SERVO_PIN);
+  myservo.write(80);
+
+  pinMode(PROCEED_BTN_PIN, INPUT_PULLUP);
+  pinMode(CANCEL_BTN_PIN, INPUT_PULLUP);
+
+  lcd.begin();
+  lcd.backlight();
+  lcd.clear();
+  printCentered("Scan your card...", 1);
+}
+
+void loop() {
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial())
+    return;
+
+  String uid = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    if (mfrc522.uid.uidByte[i] < 0x10) uid += "0";
+    uid += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  uid.toUpperCase();
+
+  Serial.print("UID: ");
+  Serial.println(uid);
+
+  lcd.clear();
+  printCentered("UID", 0);
+  printCentered(uid, 1);
+  delay(2000);
+
+  // Send UID to Python
+  Serial.println(uid);
+
+  // Wait for Python validation response
+  String response = readSerialLine();
+
+  if (response.length() == 0) {
+    lcd.clear();
+    delay(1000);
+    printCentered("Scan your card...", 1);
+    return;
+  }
+
+  int commaIndex = response.indexOf(',');
+  String message1 = "";
+  String message2 = "";
+
+  if (commaIndex != -1) {
+    message1 = response.substring(0, commaIndex);
+    message2 = response.substring(commaIndex + 1);
+  } else {
+    message1 = response;
+  }
+  message1.trim();
+  message2.trim();
+
+  lcd.clear();
+
+  if ((message1 == "rice_card" || message1 == "sugar_card") && message2 == "PROCEED") {
+    printCentered("CARD DETAILS", 0);
+    printCentered("VERIFIED", 1);
+    delay(2000);
+
+    bool proceedPressed = false;
+    waitForButtonPress(proceedPressed);
+
+    if (proceedPressed) {
+      lcd.clear();
+      printCentered(message1 == "rice_card" ? "RICE CARD" : "SUGAR CARD", 0);
+      printCentered("DISPENSING", 1);
+
+      myservo.write(180);
+      delay(message1 == "rice_card" ? 5000 : 3000);
+      myservo.write(80);
+
+      Serial.println("PROCEED");  // Confirm proceed to Python
+      lcd.clear();
+      printCentered("DONE", 0);
+      delay(2000);
+    } else {
+      lcd.clear();
+      printCentered("Operation", 0);
+      printCentered("Cancelled", 1);
+      Serial.println("CANCEL");   // Confirm cancel to Python
+      delay(3000);
+    }
+  } 
+  else if (message1 == "unknown_card" && message2 == "INVALID") {
+    printCentered("INVALID", 0);
+    printCentered("CARD", 1);
+    delay(3000);
+  } 
+  else if (message1 == "low_stock" && message2 == "INVALID") {
+    printCentered("LOW STOCK", 0);
+    printCentered("REFILL RICE", 1);
+    delay(3000);
+  } else {
+    printCentered("Unknown Msg", 0);
+    printCentered(response, 1);
+    delay(3000);
+  }
+
+  lcd.clear();
+  printCentered("Scan your card...", 1);
+}
+
