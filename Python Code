@@ -1,1 +1,106 @@
+import serial
+import time
+from datetime import datetime
+import json
+import os
 
+SERIAL_PORT = "/dev/ttyUSB1"  # Change this to match your system
+BAUD_RATE = 9600
+STOCK_FILE = "stock.json"
+
+# Initial stock
+initial_stock = {
+    "Rice": 100,
+    "Sugar": 100
+}
+
+# Known UID database
+card_db = {
+    "FD104102": {"cardType": "Rice"},
+    "E328FC2C": {"cardType": "Sugar"}
+}
+
+def load_stock():
+    if os.path.exists(STOCK_FILE):
+        with open(STOCK_FILE, "r") as f:
+            return json.load(f)
+    else:
+        return initial_stock.copy()
+
+def save_stock(stock):
+    with open(STOCK_FILE, "w") as f:
+        json.dump(stock, f)
+
+def log_transaction(uid, card_type, dispensed_qty, stock):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    remaining = stock.get("Rice", "N/A")
+    log = (
+        f"[{timestamp}]   "
+        f"UID: {uid}   "
+        f"Card_Type: {card_type}   "
+        f"Dispensed: {dispensed_qty} gram of Rice   "
+        f"Remaining_Stock (Rice): {remaining} gram\n\n"
+    )
+    with open("transactions.txt", "a") as f:
+        f.write(log)
+
+def main():
+    print("Waiting for UID from Arduino...")
+    stock = load_stock()
+
+    try:
+        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=2)
+        time.sleep(2)  # Allow connection to stabilize
+
+        while True:
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+            if not line.startswith("UID: "):
+                continue
+
+            uid = line.replace("UID: ", "").strip().upper()
+
+            if uid in card_db:
+                info = card_db[uid]
+                card_type = info["cardType"]
+
+                # Determine rice quantity based on card type
+                if card_type.lower() == "sugar":
+                    qty = 30
+                    message1 = "sugar_card"
+                elif card_type.lower() == "rice":
+                    qty = 50
+                    message1 = "rice_card"
+                else:
+                    qty = 0
+                    message1 = "unknown_card"
+
+                # Send card type message first combined with response later
+                if stock["Rice"] >= qty and qty > 0:
+                    stock["Rice"] -= qty
+                    save_stock(stock)
+                    log_transaction(uid, card_type, qty, stock)
+                    print(f"UID: {uid} Verified. Dispensing {qty} gram of Rice. Remaining: {stock['Rice']} gram.")
+                    message2 = "PROCEED"
+                else:
+                    print(f"Not enough Rice stock. Remaining: {stock['Rice']} gram.")
+                    message1 = "low_stock"
+                    message2 = "INVALID"
+
+                # Send both messages combined as one line
+                send_line = f"{message1},{message2}\n"
+                ser.write(send_line.encode())
+                ser.flush()
+                time.sleep(0.1)
+
+            else:
+                print(f"UID {uid} not recognized. Sending invalid message...")
+                send_line = "unknown_card,INVALID\n"
+                ser.write(send_line.encode())
+                ser.flush()
+                time.sleep(0.1)
+
+    except Exception as e:
+        print("Error:", e)
+
+if __name__ == "__main__":
+    main()
