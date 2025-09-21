@@ -21,5 +21,4 @@ An IoT-based smart ration system using RFID cards to automate the distribution o
 ## 📦 Folder Structure
 - `Arduino_Code/` – Contains code for ESP32 and NodeMCU
 - `Python_Script/` – UID verification and transaction logging script
-- `Images/` – Circuit diagram and hardware setup
 - `Bill_Samples/` – Sample generated bills
